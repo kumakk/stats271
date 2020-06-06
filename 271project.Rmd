@@ -1,0 +1,195 @@
+---
+title: "STATS 271 Final Project"
+author: 'Louise Huang (SUNet: qyhuang)'
+date: "5/29/2020"
+output: pdf_document
+---
+
+```{r}
+library(mlmRev)
+library(tidyverse)
+library(rstan)
+library(rstanarm)
+library(gridExtra)
+library(loo)
+library(brms)
+library(ggplot2)
+theme_set(theme_minimal())
+data(Contraception)
+cont <- Contraception
+#save.image("~/Desktop/271_project.RData")
+load("~/Desktop/271_project.RData")
+```
+
+# 1. EDA and summary statistics
+
+```{r}
+use_cont <- filter(cont, use==1)
+prop_one <- function(y) mean(y == 1)
+group_cont_use <- cont %>% group_by(district) %>% summarise(use=mean(use))
+group_region_use <- cont %>% group_by(urban) %>% summarise(use=mean(use))
+table(cont$livch)
+group_livch_use <- cont %>% group_by(livch) %>% summarise(use=mean(use))
+mean(cont$use)
+cont2 <- cont
+cont2$age <- cont2$age + 30
+test <- filter(cont2, age > 50 & age <= 55)
+mean(test$use)
+
+district_mean_hist <- group_cont_use %>% ggplot(aes(x=use)) + geom_histogram(binwidth=0.05, color="black", fill="white") + theme_bw() + ggtitle("Distribution of percentage of contraception use by district") + xlab("Percentage of contraception use") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+cont_2 <- use_cont %>% ggplot(aes(x = factor(urban), fill = factor(livch))) + geom_bar(position="dodge") + theme_bw() + ggtitle("Use of contraception by urban/rural residence and number of living children") + xlab("Urban Residence") + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black")) + scale_fill_discrete(name="Number of living children")
+
+grid.arrange(district_mean_hist, cont_2, ncol=2)
+```
+
+
+
+## Model 1. Varying intercept model with no predictor
+
+```{r}
+varying_inter_nopred_mod <- stan_glmer(formula = use ~ 1 + (1|district), 
+                         data = cont,
+                         seed = 271,
+                         cores = getOption("mc.cores", 4L),
+                         family = binomial(link = "logit"))
+summary(varying_inter_nopred_mod,  digits = 3, 
+        pars=c("(Intercept)", "b[(Intercept) district:1]", "b[(Intercept) district:2]", "Sigma[district:(Intercept),(Intercept)]"), 
+        probs = c(0.025, 0.5, 0.975))
+summary(varying_inter_nopred_mod)
+prior_summary(varying_inter_nopred_mod)
+```
+
+```{r}
+plot(varying_inter_nopred_mod, pars=c("(Intercept)", "b[(Intercept) district:1]", "b[(Intercept) district:2]", "Sigma[district:(Intercept),(Intercept)]"), 
+     prob = 0.5, prob_outer = 0.95) + ggplot2::ggtitle("Posterior medians \n with 50% and 95% intervals in varying intercept model")
+plot(varying_inter_nopred_mod, "trace", pars = "(Intercept)") + ggplot2::ggtitle("Traceplot of intercept in varying intercept model")
+```
+
+```{r}
+yrep_mod1 <- posterior_predict(varying_inter_nopred_mod, draws = 2000)
+ytrue <- cont$use
+cont$use <- ifelse(cont$use=="Y", 1, 0) # convert Y/N to 1/0
+mean(ytrue)
+hist(apply(yrep_mod1, 1, mean))
+```
+
+```{r}
+prop_zero_test1 <- pp_check(varying_inter_nopred_mod, plotfun = "stat", stat = "prop_one", binwidth=0.005) 
+prop_zero_test1 + ggtitle("Posterior checking of varying intercept model with no predictors")
+```
+
+## Model 2. Varying intercept model with predictors
+all the predictors have the same slope, but allows intercept to vary among districts.
+```{r}
+varying_intercept_mod <- stan_glmer(formula = use ~ 1 + urban + age + livch + (1|district), 
+                         data = cont,
+                         seed = 271,
+                         cores = getOption("mc.cores", 4L),
+                         family = binomial(link = "logit"))
+prior_summary(varying_intercept_mod)
+```
+
+```{r}
+summary(varying_intercept_mod)
+summary(varying_intercept_mod,  digits = 3, 
+        pars=c("(Intercept)", "b[(Intercept) district:1]", "b[(Intercept) district:2]", "urbanY", "age", "livch1", "livch2", "livch3+",
+               "Sigma[district:(Intercept),(Intercept)]"), 
+        probs = c(0.025, 0.5, 0.975))
+```
+
+Plotting
+```{r}
+plot(varying_intercept_mod, pars=c("(Intercept)", "b[(Intercept) district:1]", "b[(Intercept) district:2]", "urbanY", "age", "livch1", "livch2", "livch3+","Sigma[district:(Intercept),(Intercept)]")) + ggplot2::ggtitle("Posterior medians \n with 50% and 95% intervals")
+plot(varying_intercept_mod, "trace", pars = "(Intercept)") + ggplot2::ggtitle("Traceplot of intercept")
+```
+
+```{r}
+yrep_mod2 <- posterior_predict(varying_intercept_mod, draws = 2000)
+mean(ytrue)
+hist(apply(yrep_mod2, 1, mean))
+```
+
+
+```{r}
+prop_zero_test2 <- pp_check(varying_intercept_mod, plotfun = "stat", stat = "prop_one", binwidth=0.005) 
+prop_zero_test2 + ggtitle("Posterior checking of varying intercept model with predictors")
+```
+
+## Model 3. Varying intercept varying slope model
+age and livch have the same slope, but allows the slope of urban and intercept to vary among the districts.
+```{r}
+varying_inter_slope_mod <- stan_glmer(formula = use ~ 1 + age + livch + (urban|district), 
+                         data = cont,
+                         seed = 271,
+                         cores = getOption("mc.cores", 4L),
+                         family = binomial(link = "logit"))
+prior_summary(varying_inter_slope_mod)
+plot(varying_inter_slope_mod)
+```
+
+```{r}
+summary(varying_inter_slope_mod,  digits = 3, 
+        pars=c("(Intercept)", "b[(Intercept) district:1]", "b[urbanY district:1]", "age", "livch1", "livch2", "livch3+","Sigma[district:(Intercept),(Intercept)]"), 
+        probs = c(0.025, 0.5, 0.975))
+
+summary(varying_inter_slope_mod)
+```
+
+```{r}
+plot(varying_inter_slope_mod, pars=c("(Intercept)", "b[(Intercept) district:1]", "b[urbanY district:1]", "age", "livch1", "livch2", "livch3+","Sigma[district:(Intercept),(Intercept)]")) + ggplot2::ggtitle("Posterior medians \n with 50% and 95% intervals")
+plot(varying_inter_slope_mod, "trace", pars = "(Intercept)") + ggplot2::ggtitle("Traceplot of intercept")
+```
+
+
+```{r}
+plot(varying_inter_slope_mod, "trace", pars = "age")
+```
+
+Posterior checking
+```{r}
+yrep_mod3 <- posterior_predict(varying_inter_slope_mod, draws = 2000)
+# mean(ytrue)
+# hist(apply(yrep_mod3, 1, mean))
+
+prop_one <- function(y) mean(y == 1)
+prop_zero_test3 <- pp_check(varying_inter_slope_mod, plotfun = "stat", stat = "prop_one", binwidth=0.005) 
+prop_zero_test3 + ggtitle("Posterior checking of varying intercept varying slope model")
+```
+
+```{r}
+varying_inter_nopred_mod$waic <- rstanarm::waic(varying_inter_nopred_mod)
+varying_intercept_mod$waic <- rstanarm::waic(varying_intercept_mod)
+varying_inter_slope_mod$waic <- rstanarm::waic(varying_inter_slope_mod)
+
+varying_inter_nopred_mod$loo <- rstanarm::loo(varying_inter_nopred_mod, cores = getOption("mc.cores", 4))
+varying_intercept_mod$loo <- rstanarm::loo(varying_intercept_mod, cores = getOption("mc.cores", 4))
+varying_inter_slope_mod$loo <- rstanarm::loo(varying_inter_slope_mod, cores = getOption("mc.cores", 4))
+
+loo_compare(varying_inter_nopred_mod, varying_intercept_mod, varying_inter_slope_mod, criterion =  "loo")
+loo_compare(varying_inter_nopred_mod, varying_intercept_mod, varying_inter_slope_mod, criterion =  "waic")
+
+model_list <- stanreg_list(varying_inter_nopred_mod, varying_intercept_mod, varying_inter_slope_mod)
+loo_model_weights(model_list)
+```
+
+Bayesian model averaging
+```{r}
+fit1 <- brm(formula = use ~ 1 + urban + age + livch + (1|district), 
+                         data = cont,
+                         seed = 271,
+                         cores = getOption("mc.cores", 4L),
+                         family = bernoulli(link = "logit"))
+summary(fit1)
+
+fit2 <- brm(formula = use ~ 1 + age + livch + (urban|district), 
+                         data = cont,
+                         seed = 271,
+                         cores = getOption("mc.cores", 4L),
+                         family = bernoulli(link = "logit"))
+summary(fit2)
+avg_pred <- pp_average(fit1, fit2)
+```
+
